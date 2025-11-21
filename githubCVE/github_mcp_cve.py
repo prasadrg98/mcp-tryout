@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 import os
 import json
 import requests
+import re
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -22,11 +23,14 @@ class GitHubMCPAgent:
     Agentic workflow that uses GitHub MCP for all operations
     """
     
-    def __init__(self, github_token: str, repo_owner: str, repo_name: str):
+    def __init__(self, github_token: str, domain: str = "github.com", repo_owner: str = None, repo_name: str = None, repo_url: str = None):
         self.github_token = github_token
+        self.domain = domain
         self.repo_owner = repo_owner
         self.repo_name = repo_name
-        self.repo_full_name = f"{repo_owner}/{repo_name}"
+        self.repo_url = repo_url
+        # repo_full_name is owner/repo, but we keep domain and url for all operations
+        self.repo_full_name = f"{repo_owner}/{repo_name}" if repo_owner and repo_name else None
         self.client = None
         self.agent = None
         
@@ -79,7 +83,8 @@ class GitHubMCPAgent:
 
         # Try direct GitHub API call first since MCP server doesn't return mergeable fields
         print("Trying direct GitHub API call...")
-        url = f"https://api.github.com/repos/{self.repo_full_name}/pulls/{pr_number}"
+        api_domain = self.domain if self.domain else "github.com"
+        url = f"https://api.{api_domain}/repos/{self.repo_owner}/{self.repo_name}/pulls/{pr_number}"
         headers = {
             "Authorization": f"token {self.github_token}",
             "Accept": "application/vnd.github.v3+json"
@@ -128,7 +133,10 @@ class GitHubMCPAgent:
         prompt = f"""
         I need you to update a Gradle project version and create a pull request.
 
-        Repository: {self.repo_full_name}
+        Repository URL: {self.repo_url}
+        Domain: {self.domain}
+        Owner: {self.repo_owner}
+        Repo: {self.repo_name}
         New version: {new_version}
         Dependency: {dependency_name}
 
@@ -168,8 +176,8 @@ class GitHubMCPAgent:
         """
         
         prompt = f"""
-        Merge pull request #{pr_number} in repository {self.repo_full_name}.
-        
+        Merge pull request #{pr_number} in repository {self.repo_url}.
+        Domain: {self.domain}
         Use squash merge method and return the merge commit SHA.
         """
         
@@ -186,7 +194,8 @@ class GitHubMCPAgent:
         
         version_tag = f"auto-pr-{pr_number}"
         
-        url = f"https://api.github.com/repos/{self.repo_full_name}/releases"
+        api_domain = self.domain if self.domain else "github.com"
+        url = f"https://api.{api_domain}/repos/{self.repo_owner}/{self.repo_name}/releases"
         headers = {
             "Authorization": f"token {self.github_token}",
             "Accept": "application/vnd.github.v3+json",
@@ -220,10 +229,9 @@ class GitHubMCPAgent:
         
         prompt = f"""
         I need you to merge a pull request and create a release with automatic version increment.
-        
-        Repository: {self.repo_full_name}
-        PR Number: {pr_number}
-        
+
+        Repository URL: {self.repo_url}
+        Domain: {self.domain}
         Please follow these steps:
         1. Merge the pull request using squash merge
         2. Get the merge commit SHA
@@ -277,25 +285,30 @@ class GitHubMCPAgent:
         final_message = messages[-1].content if messages else ""
         
         # Simple pattern matching (enhance as needed)
-        import re
+        # If final_message is a list, join to string
+        if isinstance(final_message, list):
+            final_message = " ".join(str(x) for x in final_message)
         match = re.search(r'PR\s*#?(\d+)', final_message, re.IGNORECASE)
         if match:
             return int(match.group(1))
-        
+    
         # Alternative: look for "pull request number" or similar
         match = re.search(r'(?:pull request|PR)\s+(?:number\s+)?(\d+)', final_message, re.IGNORECASE)
         if match:
             return int(match.group(1))
-        
+    
         return None
 
 
 async def run_version_update(dependency_name: str, new_version: str):
-    """Run the complete version update workflow"""
+    # Run the complete version update workflow
+    # Example usage: pass domain and repo_url
     agent = GitHubMCPAgent(
         github_token=os.getenv("GITHUB_TOKEN"),
+        domain="github.com",
         repo_owner="prasadrg98",
-        repo_name="sample"
+        repo_name="sample",
+        repo_url="https://github.com/prasadrg98/sample"
     )
     
     await agent.initialize()
@@ -310,12 +323,14 @@ async def run_version_update(dependency_name: str, new_version: str):
     return pr_number
 
 async def merge_pr_and_get_release(pr_number: int):
-    """Run the complete split workflow in a single async context"""
+    # Run the complete split workflow in a single async context
     
     agent = GitHubMCPAgent(
         github_token=os.getenv("GITHUB_TOKEN"),
-        repo_owner="prasadrg98", 
-        repo_name="sample"
+        domain="github.com",
+        repo_owner="prasadrg98",
+        repo_name="sample",
+        repo_url="https://github.com/prasadrg98/sample"
     )
 
     # Initialize the agent first

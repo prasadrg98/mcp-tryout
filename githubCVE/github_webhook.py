@@ -42,73 +42,59 @@ def is_our_pr(payload: dict) -> bool:
     title = payload.get("pull_request", {}).get("title", "")
     return "AutomatedPR" in title
 
-def extract_owner_repo_from_github_input(input_str: str) -> tuple[str, str]:
+def extract_domain_owner_repo_from_github_input(input_str: str) -> tuple[str, str, str]:
     """
-    Extract owner and repo from various GitHub input formats:
-    
+    Extract domain, owner, repo from various GitHub input formats (github.com, github-cisco.com, etc)
     Supported formats:
     - owner/repo
     - https://github.com/owner/repo
-    - https://github.com/owner/repo.git
-    - https://github.com/owner/repo/pulls
-    - https://github.com/owner/repo/issues/123
-    - https://github.com/owner/repo/tree/main/src
+    - https://github-cisco.com/owner/repo.git
+    - https://github5.com/owner/repo/pulls
     - git@github.com:owner/repo.git
-    
+    - git@github-cisco.com:owner/repo.git
     Returns:
-        tuple[str, str]: (owner, repo)
-    
+        tuple[str, str, str]: (domain, owner, repo)
     Raises:
         ValueError: If the input format is not recognized or invalid
     """
     if not input_str:
         raise ValueError("Input cannot be empty")
-    
     input_str = input_str.strip()
-    
-    # Handle SSH format: git@github.com:owner/repo.git
-    if input_str.startswith("git@github.com:"):
-        ssh_part = input_str.replace("git@github.com:", "")
-        # Remove .git suffix if present
-        if ssh_part.endswith(".git"):
-            ssh_part = ssh_part[:-4]
-        parts = ssh_part.split("/")
+
+    # SSH format: git@domain:owner/repo.git
+    if input_str.startswith("git@"):
+        ssh_part = input_str.replace("git@", "")
+        domain, rest = ssh_part.split(":", 1)
+        if rest.endswith(".git"):
+            rest = rest[:-4]
+        parts = rest.split("/")
         if len(parts) >= 2:
-            return parts[0], parts[1]
+            return domain, parts[0], parts[1]
         raise ValueError(f"Invalid SSH GitHub URL format: {input_str}")
-    
-    # Handle HTTPS URLs: https://github.com/owner/repo/*
-    if input_str.startswith(("https://github.com/", "http://github.com/")):
-        # Remove protocol and domain
-        path_part = input_str.replace("https://github.com/", "").replace("http://github.com/", "")
-        
-        # Remove .git suffix if present
-        if path_part.endswith(".git"):
-            path_part = path_part[:-4]
-        
-        # Split by / and take first two parts (owner/repo)
-        parts = path_part.split("/")
+
+    # HTTPS/HTTP format: https://domain/owner/repo...
+    if input_str.startswith("http://") or input_str.startswith("https://"):
+        url = input_str.split("//", 1)[1]
+        domain_and_path = url.split("/", 1)
+        domain = domain_and_path[0]
+        path = domain_and_path[1] if len(domain_and_path) > 1 else ""
+        if path.endswith(".git"):
+            path = path[:-4]
+        parts = path.split("/")
         if len(parts) >= 2:
             owner = parts[0]
             repo = parts[1]
-            if owner and repo:
-                return owner, repo
-        
+            return domain, owner, repo
         raise ValueError(f"Invalid GitHub URL format: {input_str}")
-    
-    # Handle simple owner/repo format
+
+    # owner/repo or owner/repo/extra
     if "/" in input_str:
-        # Split only on first slash to handle cases like owner/repo/path
-        parts = input_str.split("/", 1)
-        if len(parts) == 2:
+        parts = input_str.split("/")
+        if len(parts) >= 2:
             owner = parts[0]
-            # Take only the repo name (before any additional path)
-            repo_with_path = parts[1]
-            repo = repo_with_path.split("/")[0]  # Get just the repo name
-            
-            if owner and repo:
-                return owner, repo
-        
+            repo = parts[1]
+            # Default domain if not specified
+            return "github.com", owner, repo
         raise ValueError(f"Invalid owner/repo format: {input_str}")
     
     raise ValueError(f"Unrecognized format: {input_str}. Expected 'owner/repo' or GitHub URL")
@@ -122,7 +108,7 @@ async def dependency_upgrade(
     Endpoint to trigger dependency upgrade
     Expected payload:
     {
-        "repo_full_name": "owner/repo",
+        "repo_full_url": "owner/repo",
         "dependency_name": "apacheHTTPClientVersion", 
         "new_version": "4.5.15"
     }
@@ -131,33 +117,35 @@ async def dependency_upgrade(
     print(f"Received dependency upgrade request: {json.dumps(payload)}")
 
     # Step 1: Extract and validate required parameters
-    repo_full_name = payload.get("repo_full_name", "").strip()
+    repo_full_url = payload.get("repo_full_url", "").strip()
     dependency_name = payload.get("dependency_name", "").strip()
     new_version = payload.get("new_version", "").strip()
 
     # Validate not empty
-    if not repo_full_name:
-        raise HTTPException(status_code=400, detail="repo_full_name is required and cannot be empty")
+    if not repo_full_url:
+        raise HTTPException(status_code=400, detail="repo_full_url is required and cannot be empty")
     if not dependency_name:
         raise HTTPException(status_code=400, detail="dependency_name is required and cannot be empty")
     if not new_version:
         raise HTTPException(status_code=400, detail="new_version is required and cannot be empty")
     
-    # Extract owner and repo from various GitHub URL formats or owner/repo format
+    # Extract domain, owner, repo from various GitHub URL formats or owner/repo format
     try:
-        owner, repo = extract_owner_repo_from_github_input(repo_full_name)
-        if not owner or not repo:
+        domain, owner, repo = extract_domain_owner_repo_from_github_input(repo_full_url)
+        if not domain or not owner or not repo:
             raise ValueError("Invalid format")
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid repo_full_name format: {str(e)}. Expected 'owner/repo' or GitHub URL")
+        raise HTTPException(status_code=400, detail=f"Invalid repo_full_url format: {str(e)}. Expected 'owner/repo' or GitHub URL")
 
-    print(f"✓ Validated params - Repo: {repo_full_name}, Dependency: {dependency_name}, Version: {new_version}")
+    print(f"✓ Validated params - Domain: {domain}, Repo: {owner}/{repo}, Dependency: {dependency_name}, Version: {new_version}")
 
     # Step 2: Initialize agent and execute workflow
     agent = GitHubMCPAgent(
         github_token=GITHUB_TOKEN,
+        domain=domain,
         repo_owner=owner,
-        repo_name=repo
+        repo_name=repo,
+        repo_url=repo_full_url
     )
     
     try:
@@ -171,7 +159,7 @@ async def dependency_upgrade(
             return {
                 "status": "success", 
                 "pr_number": pr_number,
-                "repo": repo_full_name,
+                "repo": repo_full_url,
                 "dependency": dependency_name,
                 "version": new_version
             }
@@ -260,11 +248,13 @@ async def handle_pr_approval(repo_full_name: str, pr_number: int):
     """
     print(f"Processing approval for our PR #{pr_number} in {repo_full_name}")
 
-    owner, repo = repo_full_name.split("/")
+    domain, owner, repo = extract_domain_owner_repo_from_github_input(repo_full_name)
     agent = GitHubMCPAgent(
         github_token=GITHUB_TOKEN,
+        domain=domain,
         repo_owner=owner,
-        repo_name=repo
+        repo_name=repo,
+        repo_url=repo_full_name
     )
 
     can_be_merged = agent.is_pr_can_be_merged(pr_number)
@@ -289,11 +279,13 @@ def handle_pr_merged(repo_full_name: str, pr_number: int, merge_commit_sha: str)
     """
     print(f"Creating release for merged PR #{pr_number} in {repo_full_name}")
     
-    owner, repo = repo_full_name.split("/")
+    domain, owner, repo = extract_domain_owner_repo_from_github_input(repo_full_name)
     agent = GitHubMCPAgent(
         github_token=GITHUB_TOKEN,
+        domain=domain,
         repo_owner=owner,
-        repo_name=repo
+        repo_name=repo,
+        repo_url=repo_full_name
     )
     
     try:
