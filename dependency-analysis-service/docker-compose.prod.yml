@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  dependency-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-5003}:5003"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ENVIRONMENT=production
+      - PORT=5003
+    volumes:
+      # Use a named volume for better performance in production
+      - gradle_cache:/root/.gradle
+      - temp_repos:/app/temp_repos
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Redis for production job queue (optional but recommended for scaling)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  gradle_cache:
+  temp_repos:
+  redis_data:
